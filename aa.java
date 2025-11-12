@@ -274,8 +274,270 @@ public class OrderApp {
     String fallback(Exception e){ return "⚡ Payment service down, order queued."; }
 }
 
+/*API Gateway Pattern — Application-Based Implementation
+Use Case: E-Commerce System
+We’ll have:
+API Gateway (Port 8080) → single entry point for all clients.
+Order Service (Port 8081) → handles order creation.
+Payment Service (Port 8082) → handles payment processing.
+User Service (Port 8083) → provides user details.
+The API Gateway will:
+Route requests to each microservice.
+Add a custom authentication filter (check API key).
+Log requests/responses.
+Handle fallback for unavailable services.*/
 
-/*🧱 1️⃣ Circuit Breaker Pattern
+//Dependencies pom.xml (Gateway Service)
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-webflux</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-starter-gateway</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.resilience4j</groupId>
+        <artifactId>resilience4j-spring-boot3</artifactId>
+    </dependency>
+</dependencies>
+
+
+//API Gateway (Port 8080)
+//application.yml
+server:
+  port: 8080
+
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: order_service
+          uri: http://localhost:8081
+          predicates:
+            - Path=/orders/hatao**
+          filters:
+            - RewritePath=/orders/(?<segment>.*), /${segment}
+            - name: CircuitBreaker
+              args:
+                name: orderCircuit
+                fallbackUri: forward:/fallback/order
+
+        - id: payment_service
+          uri: http://localhost:8082
+          predicates:
+            - Path=/payments/hatao**
+          filters:
+            - RewritePath=/payments/(?<segment>.*), /${segment}
+            - name: CircuitBreaker
+              args:
+                name: paymentCircuit
+                fallbackUri: forward:/fallback/payment
+
+        - id: user_service
+          uri: http://localhost:8083
+          predicates:
+            - Path=/users/hatao**
+          filters:
+            - RewritePath=/users/(?<segment>.*), /${segment}
+
+      default-filters:
+        - AddResponseHeader=X-Gateway,SpringCloudGateway
+
+//GatewayApplication.java
+package com.example.gateway;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+
+@SpringBootApplication
+public class GatewayApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(GatewayApplication.class, args);
+    }
+
+    // Global Authentication & Logging Filter
+    @Bean
+    public GlobalFilter globalAuthAndLogFilter() {
+        return (exchange, chain) -> {
+            String path = exchange.getRequest().getPath().toString();
+            System.out.println("🌐 Incoming request: " + path);
+
+            // Simple header-based authentication
+            if (!exchange.getRequest().getHeaders().containsKey("X-API-KEY")) {
+                exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+                return exchange.getResponse().setComplete();
+            }
+
+            return chain.filter(exchange).then(Mono.fromRunnable(() ->
+                System.out.println("✅ Response sent for: " + path)
+            ));
+        };
+    }
+}
+
+//FallbackController.java
+package com.example.gateway;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/fallback")
+public class FallbackController {
+
+    @GetMapping("/order")
+    public String orderFallback() {
+        return "⚡ Order Service is temporarily unavailable. Please try later.";
+    }
+
+    @GetMapping("/payment")
+    public String paymentFallback() {
+        return "⚡ Payment Service is not responding. Please try again shortly.";
+    }
+}
+
+//Order Service (Port 8081)
+package com.example.order;
+import org.springframework.boot.*;
+import org.springframework.boot.autoconfigure.*;
+import org.springframework.web.bind.annotation.*;
+import java.util.*;
+
+@SpringBootApplication
+@RestController
+public class OrderApplication {
+    public static void main(String[] args){ SpringApplication.run(OrderApplication.class, args); }
+
+    @GetMapping("/create")
+    public String createOrder() {
+        return "🛒 Order Created Successfully! Order ID: " + new Random().nextInt(10000);
+    }
+}
+
+
+//Payment Service (Port 8082)
+package com.example.payment;
+import org.springframework.boot.*;
+import org.springframework.boot.autoconfigure.*;
+import org.springframework.web.bind.annotation.*;
+import java.util.Random;
+
+@SpringBootApplication
+@RestController
+public class PaymentApplication {
+    Random random = new Random();
+    public static void main(String[] args){ SpringApplication.run(PaymentApplication.class, args); }
+
+    @GetMapping("/process")
+    public String processPayment() {
+        // Simulate random downtime for testing circuit breaker
+        if (random.nextInt(10) < 4) throw new RuntimeException("Payment Gateway Down!");
+        return "💳 Payment Processed Successfully!";
+    }
+}
+
+//User Service (Port 8083)
+package com.example.user;
+import org.springframework.boot.*;
+import org.springframework.boot.autoconfigure.*;
+import org.springframework.web.bind.annotation.*;
+import java.util.Map;
+
+@SpringBootApplication
+@RestController
+public class UserApplication {
+    public static void main(String[] args){ SpringApplication.run(UserApplication.class, args); }
+
+    @GetMapping("/profile")
+    public Map<String, String> getUserProfile() {
+        return Map.of("name", "Rishabh", "role", "Customer", "membership", "Gold");
+    }
+}
+
+
+/*API Gateway Pattern — Theory
+🔹 Definition
+
+The API Gateway Pattern is a single entry point for all client requests in a microservice-based architecture.
+It acts as a reverse proxy, routing incoming requests to the appropriate microservice, aggregating results, enforcing security policies, and handling cross-cutting concerns like authentication, rate limiting, and logging.
+
+🔹 Problem It Solves
+
+In a microservice ecosystem:
+
+Each microservice exposes its own REST endpoints.
+
+Clients (like web or mobile apps) need to call multiple services.
+
+Each service may require its own authentication, endpoint format, and network configuration.
+
+This leads to:
+
+Too many client-to-service calls
+
+Complex client logic
+
+Tight coupling between clients and internal services
+
+The API Gateway solves this by providing a single, unified interface that handles all communication with internal services.
+
+🔹 Key Idea
+
+Instead of clients talking directly to each microservice,
+→ all requests first go through the API Gateway, which then:
+
+Authenticates and validates the request
+
+Routes it to the appropriate microservice
+
+Applies filters (logging, rate limiting, response transformation, etc.)
+
+Aggregates data from multiple services (if needed)
+
+Returns a consolidated response to the client
+
+In short, it decouples clients from the microservices and centralizes control.
+
+🔹 When to Use
+
+Use the API Gateway Pattern when:
+
+You have multiple microservices and need a unified API endpoint.
+
+You want centralized security, rate limiting, or load balancing.
+
+Your clients (web/mobile) should not directly know about the internal network or service ports.
+
+You need response aggregation (e.g., building dashboards or search pages).
+
+🔹 How It Works
+Basic Request Flow:
+
+Client sends a request to API Gateway.
+
+Gateway identifies which microservice should handle the request.
+
+Gateway optionally applies filters:
+
+Auth check
+
+Rate limiting
+
+Logging
+
+Header enrichment
+
+Gateway forwards the request to that service.
+
+Service responds → Gateway transforms/combines → sends response back to client.
+
+🧱 1️⃣ Circuit Breaker Pattern
 🔹 Definition
 
 The Circuit Breaker Pattern is a fault-tolerance design that prevents a service from trying to repeatedly call another failing service.
